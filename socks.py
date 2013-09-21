@@ -9,6 +9,7 @@ import socket
 from SocketServer import StreamRequestHandler, ThreadingTCPServer
 from struct import pack, unpack
 import threading
+import sys
 
 class MyTCPServer(ThreadingTCPServer):
     allow_reuse_address = True
@@ -18,11 +19,15 @@ logging.basicConfig(filename='/dev/stderr', level=logging.INFO)
 
 VERSION = '\x05'
 NOAUTH = '\x00'
+USERPASS = '\x02'
 CONNECT = '\x01'
 IPV4 = '\x01'
 IPV6 = '\x04'
 DOMAIN_NAME = '\x03'
 SUCCESS = '\x00'
+
+password = None
+username = None
 
 def send(dest, msg):
     if msg == CLOSE:
@@ -81,13 +86,34 @@ class SocksHandler(StreamRequestHandler):
         nmethods = ord(self.read(1))
         method_list = self.read(nmethods)
 
-        if NOAUTH not in method_list:
-            error('Server only supports NOAUTH')
+        global password
+        global username
+
+        if password == None and NOAUTH in method_list:
+            self.send_no_auth_method()
+            info('Authenticated (no-auth)')
+        elif USERPASS in method_list:
+            self.send_user_pass_auth_method()
+            auth_version = self.read(1)
+            if auth_version != '\x01':
+                error('Wrong sub-negotiation version number (%r) closing...' % version)
+                self.close_request()
+                return
+            usr_len = ord(self.read(1))
+            usr_name = self.read(usr_len)
+            pwd_len = ord(self.read(1))
+            pwd = self.read(pwd_len)
+
+            if usr_name != username or pwd != password:
+                error('Invalid username or password')
+                self.close_request()
+                return
+            info('Authenticated (user/password)')
+            self.send_authenticated()
+        else:
+            error('Server only supports NOAUTH and user/pass')
             self.send_no_method()
             return
-        else:
-            self.send_no_auth_method()
-            info('Authenticated')
 
         # If we were authenticating it would go here
         version, cmd, zero, address_type = self.read(4)
@@ -130,7 +156,7 @@ class SocksHandler(StreamRequestHandler):
             self.send_reply6(outbound_sock.getsockname())
         else:
             self.send_reply(outbound_sock.getsockname())
-    
+
         spawn_forwarder(outbound_sock, self.request, 'destination')
         forward(self.request, outbound_sock, 'client')
 
@@ -156,7 +182,34 @@ class SocksHandler(StreamRequestHandler):
         self.wfile.write('\x05\x00')
         self.wfile.flush()
 
+    def send_user_pass_auth_method(self):
+        self.wfile.write('\x05\x02')
+        self.wfile.flush()
+
+    def send_authenticated(self):
+        self.wfile.write('\x01\x00')
+        self.wfile.flush()
+
 if __name__ == '__main__':
-    info('Listening on port 8002...')
-    server = MyTCPServer(('localhost', 8002), SocksHandler)
+
+    listen_port = 8002
+    i = 1
+    while i < len(sys.argv):
+        if sys.argv[i] == '--username':
+            username = sys.argv[i+1]
+            i += 1
+        elif sys.argv[i] == '--password':
+            password = sys.argv[i+1]
+            i += 1
+        elif sys.argv[i] == '--port':
+            listen_port = int(sys.argv[i+1])
+            i += 1
+        else:
+            if sys.argv[i] != '--help': info('unknown option "%s"' % sys.argv[i])
+            print('usage: socks.py [--username <user> --password <password>] [--port <listen-port>]')
+            sys.exit(1)
+        i += 1
+
+    info('Listening on port %d...' % listen_port)
+    server = MyTCPServer(('localhost', listen_port), SocksHandler)
     server.serve_forever()
