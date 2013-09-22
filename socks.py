@@ -28,6 +28,7 @@ SUCCESS = '\x00'
 
 password = None
 username = None
+allow_v4 = False
 
 def send(dest, msg):
     if msg == CLOSE:
@@ -79,6 +80,36 @@ class SocksHandler(StreamRequestHandler):
         # IMPROVEMENT: Timeout on client
         info('Connection - authenticating')
         version = self.read(1)
+
+        if allow_v4 and version == '\x04':
+            cmd = self.read(1)
+            if cmd != CONNECT:
+                error('Only supports connect method not (%r) closing' % cmd)
+                self.close_request()
+                return
+
+            raw_dest_port = self.read(2)
+            dest_port, = unpack('>H', raw_dest_port)
+
+            raw_dest_address = self.read(4)
+            dest_address = '.'.join(map(str, unpack('>4B', raw_dest_address)))
+
+            user_id = ''
+            c = self.read(1)
+            while c != '\0':
+                user_id += c
+                c = self.read(1)
+
+            outbound_sock = socket.socket(socket.AF_INET)
+            out_address = socket.getaddrinfo(dest_address,dest_port)[0][4]
+            debug("Creating forwarder connection to %r", out_address)
+            outbound_sock.connect(out_address)
+
+            self.send_reply_v4(outbound_sock.getsockname())
+
+            spawn_forwarder(outbound_sock, self.request, 'destination')
+            forward(self.request, outbound_sock, 'client')
+            return
 
         if version != '\x05':
             error('Wrong version number (%r) closing...' % version)
@@ -162,6 +193,10 @@ class SocksHandler(StreamRequestHandler):
         spawn_forwarder(outbound_sock, self.request, 'destination')
         forward(self.request, outbound_sock, 'client')
 
+    def send_reply_v4(self, (bind_addr, bind_port)):
+        self.wfile.write('\0\x5a\0\0\0\0\0\0')
+        self.wfile.flush()
+
     def send_reply(self, (bind_addr, bind_port)):
         bind_tuple = tuple(map(int, bind_addr.split('.')))
         full_address = bind_tuple + (bind_port,)
@@ -206,6 +241,8 @@ if __name__ == '__main__':
         elif sys.argv[i] == '--port':
             listen_port = int(sys.argv[i+1])
             i += 1
+        elif sys.argv[i] == '--allow-v4':
+            allow_v4 = True
         else:
             if sys.argv[i] != '--help': info('unknown option "%s"' % sys.argv[i])
             print('usage: socks.py [--username <user> --password <password>] [--port <listen-port>]')
