@@ -31,10 +31,12 @@ username = None
 
 def send(dest, msg):
     if msg == CLOSE:
+        dest.shutdown(socket.SHUT_WR)
         dest.close()
         return 0
     else:
         return dest.sendall(msg)
+
 def recv(source, buffer):
     data = source.recv(buffer)
     if data == '':
@@ -49,7 +51,7 @@ def forward(source, dest, name):
             send(dest, CLOSE)
             info('%s hung up' % name)
             return
-        debug('Sending %r' % (data,))
+        debug('Sending (%d) %r' % (len(data), data))
         send(dest, data)
 
 def spawn_forwarder(source, dest, name):
